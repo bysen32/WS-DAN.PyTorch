@@ -8,7 +8,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from utils import get_transform
 
-DATAPATH = '/home/guyuchong/DATA/FGVC/CUB-200-2011'
+DATAPATH = './CUB_200_2011'
 image_path = {}
 image_label = {}
 
@@ -49,7 +49,7 @@ class BirdDataset(Dataset):
                 image_label[id] = int(label)
 
         # get train/test image id from train_test_split.txt
-        with open(os.path.join(DATAPATH, 'train_test_split.txt')) as f:
+        with open(os.path.join(DATAPATH, 'train_test_split_dev.txt')) as f:
             for line in f.readlines():
                 image_id, is_training_image = line.strip().split(' ')
                 is_training_image = int(is_training_image)

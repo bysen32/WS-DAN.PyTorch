@@ -7,6 +7,7 @@ import time
 import logging
 import warnings
 from tqdm import tqdm
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,7 +16,7 @@ from torch.utils.data import DataLoader
 import config
 from models import WSDAN
 from datasets import get_trainval_datasets
-from utils import CenterLoss, AverageMeter, TopKAccuracyMetric, ModelCheckpoint, batch_augment
+from utils import CenterLoss, AttenContraLoss, AverageMeter, TopKAccuracyMetric, ModelCheckpoint, batch_augment
 
 # GPU settings
 assert torch.cuda.is_available()
@@ -26,12 +27,15 @@ torch.backends.cudnn.benchmark = True
 # General loss functions
 cross_entropy_loss = nn.CrossEntropyLoss()
 center_loss = CenterLoss()
+atten_contra_loss = AttenContraLoss()
 
 # loss and metric
 loss_container = AverageMeter(name='loss')
 raw_metric = TopKAccuracyMetric(topk=(1, 5))
 crop_metric = TopKAccuracyMetric(topk=(1, 5))
 drop_metric = TopKAccuracyMetric(topk=(1, 5))
+
+EPSILON = 1e-12
 
 
 def main():
@@ -163,7 +167,7 @@ def train(**kwargs):
     logs = kwargs['logs']
     data_loader = kwargs['data_loader']
     net = kwargs['net']
-    feature_center = kwargs['feature_center']
+    # feature_center = kwargs['feature_center']
     optimizer = kwargs['optimizer']
     pbar = kwargs['pbar']
 
@@ -179,6 +183,7 @@ def train(**kwargs):
     for i, (X, y) in enumerate(data_loader):
         optimizer.zero_grad()
 
+        batch_size = X.size(0)
         # obtain data for training
         X = X.to(device)
         y = y.to(device)
@@ -187,17 +192,26 @@ def train(**kwargs):
         # Raw Image
         ##################################
         # raw images forward
-        y_pred_raw, feature_matrix, attention_map = net(X)
+        y_pred_raw, feature_matrix, attention_maps = net(X)
+
+        attention_map = []
+        for i in range(batch_size):
+            attention_weights = torch.sqrt(attention_maps[i].sum(dim=(1,2)).detach() + EPSILON)
+            attention_weights = F.normalize(attention_weights, p=1, dim=0)
+            k_index = np.random.choice(config.num_attentions, 1, p=attention_weights.cpu().numpy())
+            attention_map.append(attention_maps[i, k_index, ...])
+        attention_map = torch.stack(attention_map)
+
 
         # Update Feature Center
-        feature_center_batch = F.normalize(feature_center[y], dim=-1)
-        feature_center[y] += config.beta * (feature_matrix.detach() - feature_center_batch)
+        # feature_center_batch = F.normalize(feature_center[y], dim=-1)
+        # feature_center[y] += config.beta * (feature_matrix.detach() - feature_center_batch)
 
         ##################################
         # Attention Cropping
         ##################################
         with torch.no_grad():
-            crop_images = batch_augment(X, attention_map[:, :1, :, :], mode='crop', theta=(0.4, 0.6), padding_ratio=0.1)
+            crop_images = batch_augment(X, attention_map, mode='crop', theta=(0.4, 0.6), padding_ratio=0.1)
 
         # crop images forward
         y_pred_crop, _, _ = net(crop_images)
@@ -206,7 +220,7 @@ def train(**kwargs):
         # Attention Dropping
         ##################################
         with torch.no_grad():
-            drop_images = batch_augment(X, attention_map[:, 1:, :, :], mode='drop', theta=(0.2, 0.5))
+            drop_images = batch_augment(X, attention_map, mode='drop', theta=(0.2, 0.5))
 
         # drop images forward
         y_pred_drop, _, _ = net(drop_images)
@@ -215,7 +229,8 @@ def train(**kwargs):
         batch_loss = cross_entropy_loss(y_pred_raw, y) / 3. + \
                      cross_entropy_loss(y_pred_crop, y) / 3. + \
                      cross_entropy_loss(y_pred_drop, y) / 3. + \
-                     center_loss(feature_matrix, feature_center_batch)
+                     atten_contra_loss(attention_maps)
+                     # center_loss(feature_matrix, feature_center_batch)
 
         # backward
         batch_loss.backward()
@@ -270,11 +285,12 @@ def validate(**kwargs):
             ##################################
             # Raw Image
             ##################################
-            y_pred_raw, _, attention_map = net(X)
+            y_pred_raw, _, attention_maps = net(X)
 
             ##################################
             # Object Localization and Refinement
             ##################################
+            attention_map = torch.mean(attention_maps, dim=1, keepdim=True)
             crop_images = batch_augment(X, attention_map, mode='crop', theta=0.1, padding_ratio=0.05)
             y_pred_crop, _, _ = net(crop_images)
 

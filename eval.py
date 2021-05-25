@@ -102,6 +102,7 @@ def main():
             y_pred_raw, _, attention_maps = net(X)
 
             # Augmentation with crop_mask
+            attention_maps = torch.mean(attention_maps, dim=1, keepdim=True)
             crop_image = batch_augment(X, attention_maps, mode='crop', theta=0.1, padding_ratio=0.05)
 
             y_pred_crop, _, _ = net(crop_image)

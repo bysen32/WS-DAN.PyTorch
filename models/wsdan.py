@@ -57,6 +57,32 @@ class BAP(nn.Module):
         feature_matrix = F.normalize(feature_matrix, dim=-1)
         return feature_matrix
 
+class tri_att(nn.Module):
+    def __init__(self):
+        super(tri_att, self).__init__()
+        self.feature_norm = nn.Softmax(dim=2)
+        self.bilinear_norm = nn.Softmax(dim=2)
+    
+    def forward(self, x):
+        n = x.size(0)
+        c = x.size(1)
+        h = x.size(2)
+        w = x.size(3)
+        f = x.reshape(n, c, -1)
+
+        # *7 to obtain an appropriate scale for the input of softmax function.
+        f_norm = self.feature_norm(f * 2)
+
+        bilinear = f_norm.bmm(f.transpose(1, 2))
+        bilinear = self.bilinear_norm(bilinear)
+        trilinear_atts = bilinear.bmm(f).view(n, c, h, w).detach()
+        # structure_att = torch.sum(trilinear_atts, dim=1, keepdim=True)
+
+        # index = torch.randint(c, (n,))
+        # detail_att = trilinear_atts[torch.arange(n), index] + 0.01
+        
+        # return structure_att, detail_att.unsqueeze(1)
+        return trilinear_atts
 
 # WS-DAN: Weakly Supervised Data Augmentation Network for FGVC
 class WSDAN(nn.Module):
@@ -90,6 +116,7 @@ class WSDAN(nn.Module):
 
         # Bilinear Attention Pooling
         self.bap = BAP(pool='GAP')
+        # self.tri_att = tri_att()
 
         # Classification Layer
         self.fc = nn.Linear(self.M * self.num_features, self.num_classes, bias=False)
@@ -101,6 +128,7 @@ class WSDAN(nn.Module):
 
         # Feature Maps, Attention Maps and Feature Matrix
         feature_maps = self.features(x)
+        # feature_maps = self.tri_att(feature_maps)
         if self.net != 'inception_mixed_7c':
             attention_maps = self.attentions(feature_maps)
         else:
@@ -110,24 +138,10 @@ class WSDAN(nn.Module):
         # Classification
         p = self.fc(feature_matrix * 100.)
 
-        # Generate Attention Map
-        if self.training:
-            # Randomly choose one of attention maps Ak
-            attention_map = []
-            for i in range(batch_size):
-                attention_weights = torch.sqrt(attention_maps[i].sum(dim=(1, 2)).detach() + EPSILON)
-                attention_weights = F.normalize(attention_weights, p=1, dim=0)
-                k_index = np.random.choice(self.M, 2, p=attention_weights.cpu().numpy())
-                attention_map.append(attention_maps[i, k_index, ...])
-            attention_map = torch.stack(attention_map)  # (B, 2, H, W) - one for cropping, the other for dropping
-        else:
-            # Object Localization Am = mean(Ak)
-            attention_map = torch.mean(attention_maps, dim=1, keepdim=True)  # (B, 1, H, W)
-
         # p: (B, self.num_classes)
         # feature_matrix: (B, M * C)
         # attention_map: (B, 2, H, W) in training, (B, 1, H, W) in val/testing
-        return p, feature_matrix, attention_map
+        return p, feature_matrix, attention_maps
 
     def load_state_dict(self, state_dict, strict=True):
         model_dict = self.state_dict()

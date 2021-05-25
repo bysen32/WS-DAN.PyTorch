@@ -21,6 +21,25 @@ class CenterLoss(nn.Module):
     def forward(self, outputs, targets):
         return self.l2_loss(outputs, targets) / outputs.size(0)
 
+###################################
+# Contrastive Loss for Attention
+###################################
+class AttenContraLoss(nn.Module):
+    def __init__(self):
+        super(AttenContraLoss, self).__init__()
+    
+    def forward(self, attention_maps):
+        B, M, W, H = attention_maps.size()
+        # flatten (B, M, W*H)
+        attention_maps = attention_maps.reshape(B, M, -1)
+        # normalize (B, M, W*H)
+        norm_atten_maps = F.normalize(attention_maps, dim=2)
+        # mm (B, M, M)
+        cos_matrix = torch.einsum('bik,bjk->bij', [norm_atten_maps, norm_atten_maps])
+        # sum / B * B
+        loss = cos_matrix.sum() - B * M
+        loss /= (B * M * M)
+        return loss
 
 ##################################
 # Metric
@@ -63,7 +82,7 @@ class TopKAccuracyMetric(Metric):
         correct = pred.eq(target.view(1, -1).expand_as(pred))
 
         for i, k in enumerate(self.topk):
-            correct_k = correct[:k].view(-1).float().sum(0)
+            correct_k = correct[:k].reshape(-1).float().sum(0)
             self.corrects[i] += correct_k.item()
 
         return self.corrects * 100. / self.num_samples
@@ -112,7 +131,7 @@ class ModelCheckpoint(Callback):
             current_score = current_score[0]
 
         if (self.mode == 'max' and current_score > self.best_score) or \
-            (self.mode == 'min' and current_score < self.best_score):
+                (self.mode == 'min' and current_score < self.best_score):
             self.best_score = current_score
 
             if isinstance(net, torch.nn.DataParallel):
@@ -136,6 +155,40 @@ class ModelCheckpoint(Callback):
                     'logs': logs,
                     'state_dict': state_dict}, self.savepath)
 
+##################################
+# att sampler 注意力采样
+##################################
+def attention_sample(images, attention_map, out_size):
+    batch_size, _, imgW, imgH = images.size()
+
+    # 上采样到原图尺寸
+    atten_map = F.upsample_bilinear(attention_map, size=(imgW, imgH))
+
+    map_sx, _ = torch.max(atten_map, 2)
+    map_sx = map_sx.unsqueeze(2)
+
+    map_sy, _ = torch.max(atten_map, 1)
+    map_sy = map_sy.unsqueeze(2)
+
+    sum_sx = torch.sum(map_sx, (1, 2), keepdim=True)
+    sum_sy = torch.sum(map_sy, (1, 2), keepdim=True)
+
+    map_sx = torch.div(map_sx, sum_sx)
+    map_sy = torch.div(map_sy, sum_sy)
+    map_xi = torch.zero_like(map_sx)
+    map_yi = torch.zero_like(map_sy)
+
+    index_x = torch.zeros((batch_size, out_size, 1)).cuda()
+    index_y = torch.zeros((batch_size, out_size, 1)).cuda()
+
+    att_grid_generator_cuda.forward(map_sx, map_sy, map_xi, map_yi, index_x, index_y, h, out_size, 4, 5, out_size/imgW)
+
+    one_vector = torch.ones_like(index_x)
+    grid_x = torch.matmul(one_vector, index_x.transpose(1, 2)).unsqueeze(-1)
+    grid_y = torch.matmul(index_y, one_vector.transpose(1, 2)).unsqueeze(-1)
+    grid = torch.cat((grid_x, grid_y), 3)
+    data = F.grid_sample(data, grid)
+    return data
 
 ##################################
 # augment function
@@ -194,7 +247,7 @@ def get_transform(resize, phase='train'):
             transforms.RandomHorizontalFlip(0.5),
             transforms.ColorJitter(brightness=0.126, saturation=0.5),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[ 0.229, 0.224, 0.225])
         ])
     else:
         return transforms.Compose([
