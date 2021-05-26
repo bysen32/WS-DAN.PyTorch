@@ -36,9 +36,12 @@ class AttenContraLoss(nn.Module):
         norm_atten_maps = F.normalize(attention_maps, dim=2)
         # mm (B, M, M)
         cos_matrix = torch.einsum('bik,bjk->bij', [norm_atten_maps, norm_atten_maps])
+        indexs = torch.arange(M)
+        mask = torch.stack([indexs != i for i in range(M)]).float().cuda()
+        cos_matrix = cos_matrix * mask
         # sum / B * B
-        loss = cos_matrix.sum() - B * M
-        loss /= (B * M * M)
+        loss = cos_matrix.sum()
+        loss /= (B * M * (M - 1))
         return loss
 
 ##################################
