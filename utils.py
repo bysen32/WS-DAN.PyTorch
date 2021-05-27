@@ -44,6 +44,25 @@ class AttenContraLoss(nn.Module):
         loss /= (B * M * (M - 1))
         return loss
 
+####################################
+# Contrastive Loss for Part
+####################################
+class PartContraLoss(nn.Module):
+    def __init__(self):
+        super(PartContraLoss, self).__init__()
+    
+    def forward(self, feature_matrix):
+        B, M, C = feature_matrix.size()
+        norm_feature_matrix = F.normalize(feature_matrix, dim=2)
+        cos_matrix = torch.einsum('bik, bjk->bij', [norm_feature_matrix, norm_feature_matrix])
+        indexs = torch.arange(M)
+        mask = torch.stack([indexs != i for i in range(M)]).float().cuda()
+        cos_matrix = cos_matrix * mask
+        loss = cos_matrix.sum()
+        loss /= (B * M * M)
+        return loss
+
+
 ##################################
 # Metric
 ##################################

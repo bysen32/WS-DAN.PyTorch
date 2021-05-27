@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 import config
 from models import WSDAN
 from datasets import get_trainval_datasets
-from utils import CenterLoss, AttenContraLoss, AverageMeter, TopKAccuracyMetric, ModelCheckpoint, batch_augment
+from utils import CenterLoss, AttenContraLoss, PartContraLoss, AverageMeter, TopKAccuracyMetric, ModelCheckpoint, batch_augment
 
 # GPU settings
 assert torch.cuda.is_available()
@@ -28,10 +28,12 @@ torch.backends.cudnn.benchmark = True
 cross_entropy_loss = nn.CrossEntropyLoss()
 center_loss = CenterLoss()
 atten_contra_loss = AttenContraLoss()
+part_contra_loss = PartContraLoss()
 
 # loss and metric
 loss_container = AverageMeter(name='loss')
 atten_loss_container = AverageMeter(name='atten_loss')
+part_loss_container = AverageMeter(name='part_loss')
 raw_metric = TopKAccuracyMetric(topk=(1, 5))
 crop_metric = TopKAccuracyMetric(topk=(1, 5))
 drop_metric = TopKAccuracyMetric(topk=(1, 5))
@@ -175,6 +177,7 @@ def train(**kwargs):
     # metrics initialization
     loss_container.reset()
     atten_loss_container.reset()
+    part_loss_container.reset()
     raw_metric.reset()
     crop_metric.reset()
     drop_metric.reset()
@@ -229,11 +232,15 @@ def train(**kwargs):
 
         # loss
         batch_loss = cross_entropy_loss(y_pred_raw, y) / 3. + \
-                     cross_entropy_loss(y_pred_crop, y) + \
+                     cross_entropy_loss(y_pred_crop, y) / 3. + \
                      cross_entropy_loss(y_pred_drop, y) / 3.
                      # center_loss(feature_matrix, feature_center_batch)
-        batch_atten_loss = atten_contra_loss(attention_maps)
-        batch_loss += batch_atten_loss
+        # batch_atten_loss = atten_contra_loss(attention_maps)
+        # batch_loss += batch_atten_loss
+
+        feature_matrix = feature_matrix.reshape(batch_size, config.num_attentions, -1)
+        batch_part_loss = part_contra_loss(feature_matrix)
+        batch_loss += batch_part_loss
 
         # backward
         batch_loss.backward()
@@ -242,21 +249,23 @@ def train(**kwargs):
         # metrics: loss and top-1,5 error
         with torch.no_grad():
             epoch_loss = loss_container(batch_loss.item())
-            epoch_atten_loss = atten_loss_container(batch_atten_loss.item())
+            # epoch_atten_loss = atten_loss_container(batch_atten_loss.item())
+            epoch_part_loss = part_loss_container(batch_part_loss.item())
             epoch_raw_acc = raw_metric(y_pred_raw, y)
             epoch_crop_acc = crop_metric(y_pred_crop, y)
             epoch_drop_acc = drop_metric(y_pred_drop, y)
 
         # end of this batch
         batch_info = 'Loss {:.4f}/{:.4f}, Raw Acc ({:.2f}, {:.2f}), Crop Acc ({:.2f}, {:.2f}), Drop Acc ({:.2f}, {:.2f})'.format(
-            epoch_atten_loss, epoch_loss, epoch_raw_acc[0], epoch_raw_acc[1],
+            epoch_part_loss, epoch_loss, epoch_raw_acc[0], epoch_raw_acc[1],
             epoch_crop_acc[0], epoch_crop_acc[1], epoch_drop_acc[0], epoch_drop_acc[1])
         pbar.update()
         pbar.set_postfix_str(batch_info)
 
     # end of this epoch
     logs['train_{}'.format(loss_container.name)] = epoch_loss
-    logs['train_{}'.format(atten_loss_container.name)] = epoch_atten_loss
+    # logs['train_{}'.format(atten_loss_container.name)] = epoch_atten_loss
+    logs['train_{}'.format(part_loss_container.name)] = epoch_part_loss
     logs['train_raw_{}'.format(raw_metric.name)] = epoch_raw_acc
     logs['train_crop_{}'.format(crop_metric.name)] = epoch_crop_acc
     logs['train_drop_{}'.format(drop_metric.name)] = epoch_drop_acc
@@ -307,11 +316,12 @@ def validate(**kwargs):
 
             # loss
             batch_loss = cross_entropy_loss(y_pred, y)
-            batch_atten_loss = atten_contra_loss(attention_maps)
-            batch_loss += batch_atten_loss
+            # batch_atten_loss = atten_contra_loss(attention_maps)
+            # batch_loss += batch_atten_loss
 
             epoch_loss = loss_container(batch_loss.item())
-            epoch_atten_loss = atten_loss_container(batch_atten_loss.item())
+            # epoch_atten_loss = atten_loss_container(batch_atten_loss.item())
+            epoch_atten_loss = 0
 
             # metrics: top-1,5 error
             epoch_acc = raw_metric(y_pred, y)
@@ -322,7 +332,7 @@ def validate(**kwargs):
     logs['val_{}'.format(raw_metric.name)] = epoch_acc
     end_time = time.time()
 
-    batch_info = 'Val Loss {:.4f}/{:.4f}, Val Acc ({:.2f}, {:.2f})'.format(epoch_atten_loss, epoch_loss, epoch_acc[0], epoch_acc[1])
+    batch_info = 'Val Loss {:.1f}/{:.4f}, Val Acc ({:.2f}, {:.2f})'.format(epoch_atten_loss, epoch_loss, epoch_acc[0], epoch_acc[1])
     pbar.set_postfix_str('{}, {}'.format(logs['train_info'], batch_info))
 
     # write log for this epoch
