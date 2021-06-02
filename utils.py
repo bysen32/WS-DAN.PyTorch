@@ -8,6 +8,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as transforms
+import att_grid_generator_cuda
 
 
 ##############################################
@@ -54,7 +55,7 @@ class PartContraLoss(nn.Module):
     def forward(self, feature_matrix):
         B, M, C = feature_matrix.size()
         norm_feature_matrix = F.normalize(feature_matrix, dim=2)
-        cos_matrix = torch.einsum('bik, bjk->bij', [norm_feature_matrix, norm_feature_matrix])
+        cos_matrix = torch.einsum('bik,bjk->bij', [norm_feature_matrix, norm_feature_matrix])
         indexs = torch.arange(M)
         mask = torch.stack([indexs != i for i in range(M)]).float().cuda()
         cos_matrix = cos_matrix * mask
@@ -180,16 +181,14 @@ class ModelCheckpoint(Callback):
 ##################################
 # att sampler 注意力采样
 ##################################
-def attention_sample(images, attention_map, out_size):
-    batch_size, _, imgW, imgH = images.size()
-
-    # 上采样到原图尺寸
-    atten_map = F.upsample_bilinear(attention_map, size=(imgW, imgH))
-
-    map_sx, _ = torch.max(atten_map, 2)
+def attention_sample(data, att, out_size=448):
+    n = data.size(0)
+    h = data.size(2)
+    att = F.interpolate(att, (h, h), mode='bilinear', align_corners=False).squeeze(1)
+    map_sx, _ = torch.max(att, 2)
     map_sx = map_sx.unsqueeze(2)
 
-    map_sy, _ = torch.max(atten_map, 1)
+    map_sy, _ = torch.max(att, 1)
     map_sy = map_sy.unsqueeze(2)
 
     sum_sx = torch.sum(map_sx, (1, 2), keepdim=True)
@@ -197,13 +196,13 @@ def attention_sample(images, attention_map, out_size):
 
     map_sx = torch.div(map_sx, sum_sx)
     map_sy = torch.div(map_sy, sum_sy)
-    map_xi = torch.zero_like(map_sx)
-    map_yi = torch.zero_like(map_sy)
+    map_xi = torch.zeros_like(map_sx)
+    map_yi = torch.zeros_like(map_sy)
 
-    index_x = torch.zeros((batch_size, out_size, 1)).cuda()
-    index_y = torch.zeros((batch_size, out_size, 1)).cuda()
+    index_x = torch.zeros((n, out_size, 1)).cuda()
+    index_y = torch.zeros((n, out_size, 1)).cuda()
 
-    att_grid_generator_cuda.forward(map_sx, map_sy, map_xi, map_yi, index_x, index_y, h, out_size, 4, 5, out_size/imgW)
+    att_grid_generator_cuda.forward(map_sx, map_sy, map_xi, map_yi, index_x, index_y, h, out_size, 4, 5, out_size/h)
 
     one_vector = torch.ones_like(index_x)
     grid_x = torch.matmul(one_vector, index_x.transpose(1, 2)).unsqueeze(-1)

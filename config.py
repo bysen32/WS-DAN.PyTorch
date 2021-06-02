@@ -4,7 +4,7 @@
 GPU = '0'                   # GPU
 workers = 4                 # number of Dataloader workers
 epochs = 160                # number of epochs
-batch_size = 12             # batch size
+batch_size = 8             # batch size
 learning_rate = 1e-3        # initial learning rate
 
 ##################################################
@@ -12,8 +12,8 @@ learning_rate = 1e-3        # initial learning rate
 ##################################################
 image_size = (448, 448)     # size of training images
 net = 'inception_mixed_6e'  # feature extractor
-# net = 'resnet50'  # feature extractor
-num_attentions = 16         # number of attention maps
+# net = 'resnet50'          # feature extractor
+num_attentions = 4         # number of attention maps
 beta = 5e-2                 # param for update feature centers
 
 ##################################################

@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 import config
 from models import WSDAN
 from datasets import get_trainval_datasets
-from utils import CenterLoss, AttenContraLoss, PartContraLoss, AverageMeter, TopKAccuracyMetric, ModelCheckpoint, batch_augment
+from utils import CenterLoss, AttenContraLoss, PartContraLoss, AverageMeter, TopKAccuracyMetric, ModelCheckpoint, batch_augment, attention_sample
 
 # GPU settings
 assert torch.cuda.is_available()
@@ -37,6 +37,8 @@ part_loss_container = AverageMeter(name='part_loss')
 raw_metric = TopKAccuracyMetric(topk=(1, 5))
 crop_metric = TopKAccuracyMetric(topk=(1, 5))
 drop_metric = TopKAccuracyMetric(topk=(1, 5))
+detail_metric = TopKAccuracyMetric(topk=(1, 5))
+struct_metric = TopKAccuracyMetric(topk=(1, 5))
 
 EPSILON = 1e-12
 
@@ -207,7 +209,6 @@ def train(**kwargs):
             attention_map.append(attention_maps[i, k_index, ...])
         attention_map = torch.stack(attention_map)
 
-
         # Update Feature Center
         # feature_center_batch = F.normalize(feature_center[y], dim=-1)
         # feature_center[y] += config.beta * (feature_matrix.detach() - feature_center_batch)
@@ -230,10 +231,28 @@ def train(**kwargs):
         # drop images forward
         y_pred_drop, _, _ = net(drop_images)
 
+        ##################################
+        # Attention Detail
+        ##################################
+        with torch.no_grad():
+            detail_images = attention_sample(X, attention_map, out_size=448)
+        
+        y_pred_detail, _, _ = net(detail_images)
+
+        ##################################
+        # Attention Struct
+        ##################################
+        with torch.no_grad():
+            struct_images = attention_sample(X, torch.mean(attention_maps, dim=1, keepdim=True), out_size=448)
+        
+        y_pred_struct, _, _ = net(struct_images)
+
         # loss
-        batch_loss = cross_entropy_loss(y_pred_raw, y) / 3. + \
-                     cross_entropy_loss(y_pred_crop, y) / 3. + \
-                     cross_entropy_loss(y_pred_drop, y) / 3.
+        batch_loss = cross_entropy_loss(y_pred_raw, y) / 5. + \
+                     cross_entropy_loss(y_pred_crop, y) / 5. + \
+                     cross_entropy_loss(y_pred_drop, y) / 5. + \
+                     cross_entropy_loss(y_pred_detail, y) / 5. + \
+                     cross_entropy_loss(y_pred_struct, y) / 5.
                      # center_loss(feature_matrix, feature_center_batch)
         # batch_atten_loss = atten_contra_loss(attention_maps)
         # batch_loss += batch_atten_loss
@@ -254,11 +273,12 @@ def train(**kwargs):
             epoch_raw_acc = raw_metric(y_pred_raw, y)
             epoch_crop_acc = crop_metric(y_pred_crop, y)
             epoch_drop_acc = drop_metric(y_pred_drop, y)
+            epoch_detail_acc = detail_metric(y_pred_detail, y)
+            epoch_struct_acc = struct_metric(y_pred_struct, y)
 
         # end of this batch
-        batch_info = 'Loss {:.4f}/{:.4f}, Raw Acc ({:.2f}, {:.2f}), Crop Acc ({:.2f}, {:.2f}), Drop Acc ({:.2f}, {:.2f})'.format(
-            epoch_part_loss, epoch_loss, epoch_raw_acc[0], epoch_raw_acc[1],
-            epoch_crop_acc[0], epoch_crop_acc[1], epoch_drop_acc[0], epoch_drop_acc[1])
+        batch_info = 'Loss {:.4f}/{:.4f}, Raw Acc {:.2f}, Crop Acc {:.2f}, Drop Acc {:.2f}, Detail Acc {:.2f}, Struct Acc {:.2f}'.format(
+            epoch_part_loss, epoch_loss, epoch_raw_acc[0], epoch_crop_acc[0], epoch_drop_acc[0], epoch_detail_acc[0], epoch_struct_acc[0])
         pbar.update()
         pbar.set_postfix_str(batch_info)
 

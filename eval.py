@@ -5,6 +5,7 @@ Revised: Dec 03,2019 - Yuchong Gu
 import os
 import logging
 import warnings
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,7 +16,9 @@ from tqdm import tqdm
 import config
 from models import WSDAN
 from datasets import get_trainval_datasets
-from utils import TopKAccuracyMetric, batch_augment
+from utils import TopKAccuracyMetric, batch_augment, attention_sample
+
+EPSILON = 1e-12
 
 # GPU settings
 assert torch.cuda.is_available()
@@ -102,8 +105,18 @@ def main():
             y_pred_raw, _, attention_maps = net(X)
 
             # Augmentation with crop_mask
+            attention_map = []
+            for i in range(X.size(0)):
+                attention_weights = torch.sqrt(attention_maps[i].sum(dim=(1,2)).detach() + EPSILON)
+                attention_weights = F.normalize(attention_weights, p=1, dim=0)
+                k_index = np.random.choice(config.num_attentions, 1, p=attention_weights.cpu().numpy())
+                attention_map.append(attention_maps[i, k_index, ...])
+            attention_map = torch.stack(attention_map)
+
             attention_maps = torch.mean(attention_maps, dim=1, keepdim=True)
-            crop_image = batch_augment(X, attention_maps, mode='crop', theta=0.1, padding_ratio=0.05)
+            crop_image = batch_augment(X, attention_maps, mode='crop', theta=(0.4, 0.6), padding_ratio=0.1)
+            detail_image = attention_sample(X * STD.cuda() + MEAN.cuda(), attention_map, out_size=448)
+            struct_image = attention_sample(X * STD.cuda() + MEAN.cuda(), attention_maps, out_size=448)
 
             y_pred_crop, _, _ = net(crop_image)
             y_pred = (y_pred_raw + y_pred_crop) / 2.
@@ -118,6 +131,8 @@ def main():
 
                 # raw_image, heat_attention, raw_attention
                 raw_image = X.cpu() * STD + MEAN
+                crop_image = batch_augment(raw_image, attention_maps, mode='crop', theta=(0.4, 0.6), padding_ratio=0.1)
+                drop_image = batch_augment(raw_image, attention_maps, mode='drop', theta=(0.2, 0.5))
                 heat_attention_image = raw_image * 0.5 + heat_attention_maps * 0.5
                 raw_attention_image = raw_image * attention_maps
 
@@ -125,9 +140,17 @@ def main():
                     rimg = ToPILImage(raw_image[batch_idx])
                     raimg = ToPILImage(raw_attention_image[batch_idx])
                     haimg = ToPILImage(heat_attention_image[batch_idx])
+                    cropimg = ToPILImage(crop_image[batch_idx])
+                    dropimg = ToPILImage(drop_image[batch_idx])
+                    detailimg = ToPILImage(detail_image[batch_idx])
+                    structimg = ToPILImage(struct_image[batch_idx])
                     rimg.save(os.path.join(savepath, '%03d_raw.jpg' % (i * config.batch_size + batch_idx)))
-                    raimg.save(os.path.join(savepath, '%03d_raw_atten.jpg' % (i * config.batch_size + batch_idx)))
-                    haimg.save(os.path.join(savepath, '%03d_heat_atten.jpg' % (i * config.batch_size + batch_idx)))
+                    # raimg.save(os.path.join(savepath, '%03d_raw_atten.jpg' % (i * config.batch_size + batch_idx)))
+                    # haimg.save(os.path.join(savepath, '%03d_heat_atten.jpg' % (i * config.batch_size + batch_idx)))
+                    cropimg.save(os.path.join(savepath, '%03d_crop.jpg' % (i * config.batch_size + batch_idx)))
+                    dropimg.save(os.path.join(savepath, '%03d_drop.jpg' % (i * config.batch_size + batch_idx)))
+                    detailimg.save(os.path.join(savepath, '%03d_detail.jpg' % (i * config.batch_size + batch_idx)))
+                    structimg.save(os.path.join(savepath, '%03d_struct.jpg' % (i * config.batch_size + batch_idx)))
 
             # Top K
             epoch_raw_acc = raw_accuracy(y_pred_raw, y)
